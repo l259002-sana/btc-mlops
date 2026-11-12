@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-data/
-models/
-shared/
-*.zip
-btc_kfp_pipeline.yaml.bak
