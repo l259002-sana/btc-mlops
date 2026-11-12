@@ -25,7 +25,7 @@ spec:
         fsGroup: 10001          # makes the PVC writable by the non-root user
       containers:
         - name: api
-          image: DOCKERHUB_USER/btc-forecast-api:latest   # replaced by scripts/kind_up.sh
+          image: sanafatimal259002/btc-forecast-api:latest   # replaced by scripts/kind_up.sh
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
