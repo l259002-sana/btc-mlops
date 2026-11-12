@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: btc-forecast-api
+  labels:
+    app: btc-forecast-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: btc-forecast-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: btc-forecast-api
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001          # makes the PVC writable by the non-root user
+      containers:
+        - name: api
+          image: DOCKERHUB_USER/btc-forecast-api:latest   # replaced by scripts/kind_up.sh
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: btc-api-config
+            - secretRef:
+                name: btc-api-secret
+          env:
+            - name: MODEL_DIR
+              value: /app/models
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: btc-models-pvc

@@ -1,0 +1,26 @@
+# In-cluster load generator (no wrk/Locust install needed). Apply to trigger HPA scaling,
+# delete to stop:  kubectl delete -f k8s/loadgen.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      containers:
+        - name: loadgen
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                wget -q -O- --header 'Content-Type: application/json' \
+                  --post-data '{"forecast_days": 7}' http://btc-forecast-api/predict > /dev/null
+              done
