@@ -25,7 +25,8 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ ./src/
 COPY app/app.py app/entrypoint.sh ./
-RUN mkdir -p /app/models /app/data && chown -R appuser:appuser /app
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh \
+    && mkdir -p /app/models /app/data && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
