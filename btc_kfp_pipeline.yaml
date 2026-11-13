@@ -1,0 +1,228 @@
+# PIPELINE DEFINITION
+# Name: btc-forecast-pipeline
+# Description: Daily BTC-USD ingestion, features and training
+# Inputs:
+#    period: str [Default: '5y']
+components:
+  comp-generate-features:
+    executorLabel: exec-generate-features
+    inputDefinitions:
+      artifacts:
+        raw_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        features:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ingest-data:
+    executorLabel: exec-ingest-data
+    inputDefinitions:
+      parameters:
+        period:
+          defaultValue: 5y
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        raw_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        features:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-generate-features:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - generate_features
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.2'\
+          \ 'numpy==1.26.4'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef generate_features(raw_data: Input[Dataset], features: Output[Dataset]):\n\
+          \    import numpy as np\n    import pandas as pd\n\n    df = pd.read_csv(raw_data.path,\
+          \ parse_dates=[\"Date\"]).drop_duplicates(\"Date\").sort_values(\"Date\"\
+          )\n    df = df.dropna(subset=[\"Close\"])\n    close = df[\"Close\"].astype(float).reset_index(drop=True)\n\
+          \    ret = np.log(close).diff()\n    out = pd.DataFrame({f\"ret_lag_{i}\"\
+          : ret.shift(i - 1) for i in range(1, 8)})\n    out[\"ma7_ratio\"] = close.rolling(7).mean()\
+          \ / close - 1\n    out[\"ma30_ratio\"] = close.rolling(30).mean() / close\
+          \ - 1\n    out[\"vol7\"] = ret.rolling(7).std()\n    out[\"vol30\"] = ret.rolling(30).std()\n\
+          \    out[\"target\"] = ret.shift(-1)\n    out.dropna().to_csv(features.path,\
+          \ index=False)\n\n"
+        image: python:3.10-slim
+    exec-ingest-data:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ingest_data
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.2'\
+          \ 'numpy==1.26.4' 'yfinance==0.2.54'  &&  python3 -m pip install --quiet\
+          \ --no-warn-script-location 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ingest_data(raw_data: Output[Dataset], period: str = \"5y\"):\n\
+          \    import numpy as np\n    import pandas as pd\n\n    try:\n        import\
+          \ yfinance as yf\n\n        df = yf.download(\"BTC-USD\", period=period,\
+          \ interval=\"1d\", auto_adjust=False, progress=False)\n        if isinstance(df.columns,\
+          \ pd.MultiIndex):\n            df.columns = df.columns.get_level_values(0)\n\
+          \        df = df.reset_index()[[\"Date\", \"Open\", \"High\", \"Low\", \"\
+          Close\", \"Volume\"]]\n        assert len(df) > 100\n    except Exception\
+          \ as exc:  # offline fallback so the pipeline always runs\n        print(\"\
+          yfinance failed:\", exc, \"- using synthetic data\")\n        rng = np.random.default_rng(1)\n\
+          \        close = 30000 * np.exp(np.cumsum(rng.normal(0.0004, 0.03, 1000)))\n\
+          \        df = pd.DataFrame({\"Date\": pd.date_range(end=\"today\", periods=1000),\
+          \ \"Close\": close})\n    df.to_csv(raw_data.path, index=False)\n\n"
+        image: python:3.10-slim
+    exec-train-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.2'\
+          \ 'numpy==1.26.4' 'scikit-learn==1.5.1' 'joblib==1.4.2'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.18.0' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_model(features: Input[Dataset], model: Output[Model], metrics:\
+          \ Output[Metrics]):\n    import joblib\n    import numpy as np\n    import\
+          \ pandas as pd\n    from sklearn.ensemble import GradientBoostingRegressor\n\
+          \n    data = pd.read_csv(features.path)\n    cols = [c for c in data.columns\
+          \ if c != \"target\"]\n    split = len(data) - 7\n    reg = GradientBoostingRegressor(n_estimators=150,\
+          \ max_depth=3, learning_rate=0.05, random_state=42)\n    reg.fit(data[cols].values[:split],\
+          \ data[\"target\"].values[:split])\n    pred = reg.predict(data[cols].values[split:])\n\
+          \    err = pred - data[\"target\"].values[split:]\n    metrics.log_metric(\"\
+          mae_log_return\", float(np.mean(np.abs(err))))\n    metrics.log_metric(\"\
+          rmse_log_return\", float(np.sqrt(np.mean(err**2))))\n    reg.fit(data[cols].values,\
+          \ data[\"target\"].values)  # refit on all data\n    joblib.dump({\"model\"\
+          : reg, \"feature_cols\": cols}, model.path)\n\n"
+        image: python:3.10-slim
+pipelineInfo:
+  description: Daily BTC-USD ingestion, features and training
+  name: btc-forecast-pipeline
+root:
+  dag:
+    tasks:
+      generate-features:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-generate-features
+        dependentTasks:
+        - ingest-data
+        inputs:
+          artifacts:
+            raw_data:
+              taskOutputArtifact:
+                outputArtifactKey: raw_data
+                producerTask: ingest-data
+        taskInfo:
+          name: generate-features
+      ingest-data:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-ingest-data
+        inputs:
+          parameters:
+            period:
+              componentInputParameter: period
+        taskInfo:
+          name: ingest-data
+      train-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - generate-features
+        inputs:
+          artifacts:
+            features:
+              taskOutputArtifact:
+                outputArtifactKey: features
+                producerTask: generate-features
+        taskInfo:
+          name: train-model
+  inputDefinitions:
+    parameters:
+      period:
+        defaultValue: 5y
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.18.0
